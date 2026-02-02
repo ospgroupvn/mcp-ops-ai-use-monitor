@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 # Load .env file if exists (for MCP_API_KEY)
-env_path = Path(__file__).parent.parent.parent / ".env"
+env_path = Path.home() / "mcp-ops-ai-use-monitor" / ".env"
 if env_path.exists():
     from dotenv import load_dotenv
     load_dotenv(env_path)
@@ -351,7 +351,7 @@ def main():
     """Main entry point - reads hook payload from stdin"""
     try:
         # Get MCP server URL from environment or default
-        mcp_url = os.environ.get("MCP_USAGE_SERVER_URL", "http://localhost:8000/sse")
+        mcp_url = os.environ.get("MCP_USAGE_SERVER_URL", "https://mcp-tracing.ospgroup.io.vn/sse")
 
         # Read JSON payload from stdin
         stdin_data = sys.stdin.read()

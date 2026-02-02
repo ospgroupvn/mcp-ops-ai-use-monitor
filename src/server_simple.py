@@ -143,8 +143,6 @@ async def health_check() -> dict:
 def main():
     """Run the MCP server with SSE transport"""
     import uvicorn
-    from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.requests import Request
     from starlette.responses import JSONResponse
 
     port = int(os.getenv("PORT", "8000"))
@@ -155,32 +153,62 @@ def main():
     print(f"API Key authentication: {'enabled' if API_KEY else 'disabled'}")
     print("[SECURITY] DNS rebinding protection disabled (allows external IP access)")
 
-    # Get the SSE app from FastMCP (security settings already configured at init)
-    app = mcp.sse_app()
+    # Get the SSE app from FastMCP
+    sse_app = mcp.sse_app()
 
-    # Add API Key middleware if configured
-    if API_KEY:
-        class APIKeyMiddleware(BaseHTTPMiddleware):
-            async def dispatch(self, request: Request, call_next):
-                # Check for API key in header
-                api_key = request.headers.get("X-MCP-API-Key")
+    # Create wrapper app with API key check (ASGI-native, SSE compatible)
+    async def app(scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path", "")
 
-                if not api_key or api_key != API_KEY:
-                    return JSONResponse(
+            # Health endpoint - no auth required
+            if path == "/health":
+                response = JSONResponse(
+                    status_code=200,
+                    content={"status": "healthy", "version": "0.1.0"},
+                )
+                await response(scope, receive, send)
+                return
+
+            # Check API key for other endpoints
+            if API_KEY:
+                headers = dict(scope.get("headers", []))
+                api_key = headers.get(b"x-mcp-api-key", b"").decode()
+
+                if api_key != API_KEY:
+                    response = JSONResponse(
                         status_code=401,
                         content={"error": "Invalid or missing API key"},
                     )
+                    await response(scope, receive, send)
+                    return
 
-                # API key valid, proceed with request
-                response = await call_next(request)
-                return response
+        # Fix host header for MCP SSE validation when behind reverse proxy
+        # MCP library validates host header - override to localhost
+        if scope["type"] == "http":
+            new_headers = []
+            for name, value in scope.get("headers", []):
+                if name == b"host":
+                    new_headers.append((b"host", b"localhost:8000"))
+                else:
+                    new_headers.append((name, value))
+            scope = dict(scope)
+            scope["headers"] = new_headers
 
-        # Add middleware to the app
-        app.add_middleware(APIKeyMiddleware)
+        # Pass through to SSE app
+        await sse_app(scope, receive, send)
+
+    if API_KEY:
         print(f"[AUTH] API Key middleware enabled - header: X-MCP-API-Key")
 
-    # Run with uvicorn
-    uvicorn.run(app, host=host, port=port)
+    # Run with uvicorn (proxy headers enabled for K8s/reverse proxy)
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":
