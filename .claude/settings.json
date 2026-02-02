@@ -1,4 +1,8 @@
 {
+  "env": {
+    "MCP_API_KEY": "dev-api-key-123",
+    "MCP_USAGE_SERVER_URL": "http://10.10.10.63:8000/sse"
+  },
   "hooks": {
     "Stop": [
       {
@@ -6,7 +10,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/send_usage.py",
+            "command": ".claude/hooks/send_usage.sh",
             "timeout": 30
           }
         ]

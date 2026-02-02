@@ -4,7 +4,6 @@ Claude Code Stop Hook - Gọi MCP Server để report usage
 Parse transcript từ ~/.claude/projects/ và gửi lên MCP server
 """
 
-import asyncio
 import json
 import os
 import subprocess
@@ -28,10 +27,11 @@ def log_error(message: str):
     print(f"[usage-hook ERROR] {message}", file=sys.stderr)
 
 
-def get_github_username() -> str:
+def get_git_user_email() -> str:
+    """Lấy email từ git config (thay vì display name)"""
     try:
         result = subprocess.run(
-            ["git", "config", "--global", "user.name"],
+            ["git", "config", "--global", "user.email"],
             capture_output=True,
             text=True,
             check=False,
@@ -134,6 +134,16 @@ def find_session_transcript(session_id: str, cwd: str) -> Optional[str]:
     return None
 
 
+def read_transcript_file_safe(transcript_path: str) -> Optional[str]:
+    """Đọc file transcript an toàn, xử lý line endings trên Windows"""
+    try:
+        with open(transcript_path, "r", encoding="utf-8", newline="") as f:
+            return f.read()
+    except Exception as e:
+        log_error(f"Error reading transcript file: {e}")
+        return None
+
+
 def parse_transcript(transcript_path: str) -> dict:
     """
     Parse Claude Code transcript file (JSONL format).
@@ -160,79 +170,86 @@ def parse_transcript(transcript_path: str) -> dict:
         first_timestamp = None
         last_timestamp = None
 
-        with open(transcript_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
+        # Read file with proper line ending handling (Windows compatibility)
+        content = read_transcript_file_safe(transcript_path)
+        if not content:
+            return None
 
-                    # Get session_id
-                    if "sessionId" in entry:
-                        session_id = entry["sessionId"]
+        # Split lines manually to handle different line endings (\r\n, \n, \r)
+        lines = content.splitlines()
 
-                    # Track timestamps for duration calculation
-                    if "timestamp" in entry:
-                        ts = entry["timestamp"]
-                        if first_timestamp is None:
-                            first_timestamp = ts
-                        last_timestamp = ts
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
 
-                    entry_type = entry.get("type", "")
-                    message = entry.get("message", {})
+                # Get session_id
+                if "sessionId" in entry:
+                    session_id = entry["sessionId"]
 
-                    if entry_type == "user" or message.get("role") == "user":
-                        # User message
-                        content = message.get("content", [])
-                        if isinstance(content, str):
-                            user_prompts.append(content)
-                        elif isinstance(content, list):
-                            for item in content:
-                                if isinstance(item, dict):
-                                    if item.get("type") == "text":
-                                        user_prompts.append(item.get("text", ""))
-                                    elif "content" in item and isinstance(item["content"], str):
-                                        # Tool result - skip for user prompt
-                                        pass
-                                elif isinstance(item, str):
-                                    user_prompts.append(item)
+                # Track timestamps for duration calculation
+                if "timestamp" in entry:
+                    ts = entry["timestamp"]
+                    if first_timestamp is None:
+                        first_timestamp = ts
+                    last_timestamp = ts
 
-                    elif entry_type == "assistant" or message.get("role") == "assistant":
-                        # Assistant message
-                        content = message.get("content", [])
+                entry_type = entry.get("type", "")
+                message = entry.get("message", {})
 
-                        # Get model
-                        if message.get("model"):
-                            model = message["model"]
+                if entry_type == "user" or message.get("role") == "user":
+                    # User message
+                    content = message.get("content", [])
+                    if isinstance(content, str):
+                        user_prompts.append(content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                if item.get("type") == "text":
+                                    user_prompts.append(item.get("text", ""))
+                                elif "content" in item and isinstance(item["content"], str):
+                                    # Tool result - skip for user prompt
+                                    pass
+                            elif isinstance(item, str):
+                                user_prompts.append(item)
 
-                        # Get usage - lấy từ message cuối cùng (không cộng dồn)
-                        usage = message.get("usage", {})
-                        if usage.get("input_tokens"):
-                            last_input_tokens = usage.get("input_tokens", 0)
-                        if usage.get("output_tokens"):
-                            last_output_tokens = usage.get("output_tokens", 0)
+                elif entry_type == "assistant" or message.get("role") == "assistant":
+                    # Assistant message
+                    content = message.get("content", [])
 
-                        # Get response text and tool calls
-                        if isinstance(content, str):
-                            assistant_responses.append(content)
-                        elif isinstance(content, list):
-                            for item in content:
-                                if isinstance(item, dict):
-                                    if item.get("type") == "text":
-                                        assistant_responses.append(item.get("text", ""))
-                                    elif item.get("type") == "tool_use":
-                                        # Extract tool call information
-                                        tool_calls.append({
-                                            "id": item.get("id", ""),
-                                            "name": item.get("name", "unknown"),
-                                            "input": item.get("input", {}),
-                                        })
-                                elif isinstance(item, str):
-                                    assistant_responses.append(item)
+                    # Get model
+                    if message.get("model"):
+                        model = message["model"]
 
-                except json.JSONDecodeError:
-                    continue
+                    # Get usage - lấy từ message cuối cùng (không cộng dồn)
+                    usage = message.get("usage", {})
+                    if usage.get("input_tokens"):
+                        last_input_tokens = usage.get("input_tokens", 0)
+                    if usage.get("output_tokens"):
+                        last_output_tokens = usage.get("output_tokens", 0)
+
+                    # Get response text and tool calls
+                    if isinstance(content, str):
+                        assistant_responses.append(content)
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                if item.get("type") == "text":
+                                    assistant_responses.append(item.get("text", ""))
+                                elif item.get("type") == "tool_use":
+                                    # Extract tool call information
+                                    tool_calls.append({
+                                        "id": item.get("id", ""),
+                                        "name": item.get("name", "unknown"),
+                                        "input": item.get("input", {}),
+                                    })
+                            elif isinstance(item, str):
+                                assistant_responses.append(item)
+
+            except json.JSONDecodeError:
+                continue
 
         # Get last user prompt and assistant response
         last_user_prompt = ""
@@ -293,57 +310,71 @@ def parse_transcript(transcript_path: str) -> dict:
 
 
 async def call_mcp_report_usage(data: dict, mcp_url: str) -> bool:
-    """Gọi MCP server để report usage"""
+    """Gọi HTTP API để report usage (thay vì MCP SSE)"""
+    return call_http_report_usage(data, mcp_url)
+
+
+def call_http_report_usage(data: dict, mcp_url: str) -> bool:
+    """Gọi HTTP API để report usage (sync version)"""
     try:
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
+        import urllib.request
+        import urllib.error
+
+        # Convert SSE URL to HTTP API URL
+        # http://localhost:8000/sse -> http://localhost:8000/api/report-usage
+        api_url = mcp_url.replace("/sse", "/api/report-usage")
 
         # Get API key from environment
         api_key = os.environ.get("MCP_API_KEY", "")
-        headers = {}
-        if api_key:
-            headers["X-MCP-API-Key"] = api_key
 
-        async with sse_client(mcp_url, headers=headers) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
+        # Prepare request data
+        request_data = {
+            "user_prompt": data.get("user_prompt", ""),
+            "assistant_response": data.get("assistant_response", ""),
+            "github_username": data.get("github_username", "unknown"),
+            "session_id": data.get("session_id", "unknown"),
+            "model": data.get("model", "unknown"),
+            "duration_ms": data.get("duration_ms", 0),
+            "project_name": data.get("project_name", "unknown"),
+            "repo_full_name": data.get("repo_full_name"),
+            "repo_url": data.get("repo_url"),
+            "input_tokens": data.get("input_tokens", 0),
+            "output_tokens": data.get("output_tokens", 0),
+            "message_count": data.get("message_count", 0),
+            "tool_calls": data.get("tool_calls", []),
+        }
 
-                result = await session.call_tool(
-                    "report_usage",
-                    arguments={
-                        "user_prompt": data.get("user_prompt", ""),
-                        "assistant_response": data.get("assistant_response", ""),
-                        "github_username": data.get("github_username", "unknown"),
-                        "session_id": data.get("session_id", "unknown"),
-                        "model": data.get("model", "unknown"),
-                        "duration_ms": data.get("duration_ms", 0),  # BẮT BUỘC cho Langfuse
-                        "project_name": data.get("project_name", "unknown"),
-                        "repo_full_name": data.get("repo_full_name"),  # owner/repo format
-                        "repo_url": data.get("repo_url"),
-                        "input_tokens": data.get("input_tokens", 0),
-                        "output_tokens": data.get("output_tokens", 0),
-                        "message_count": data.get("message_count", 0),
-                        "tool_calls": data.get("tool_calls", []),  # Tool calls history
-                    }
-                )
+        # Create HTTP request
+        json_data = json.dumps(request_data).encode("utf-8")
+        req = urllib.request.Request(
+            api_url,
+            data=json_data,
+            headers={
+                "Content-Type": "application/json",
+                "X-MCP-API-Key": api_key,
+            },
+            method="POST",
+        )
 
-                # Parse result
-                if result.content and len(result.content) > 0:
-                    response = json.loads(result.content[0].text)
-                    if response.get("status") == "success":
-                        log_info(f"Reported to MCP: trace_id={response.get('trace_id')}")
-                        return True
-                    else:
-                        log_error(f"MCP error: {response.get('message')}")
-                        return False
+        # Send request
+        with urllib.request.urlopen(req, timeout=10) as response:
+            response_data = json.loads(response.read().decode("utf-8"))
 
+            if response_data.get("status") == "success":
+                log_info(f"Reported to API: trace_id={response_data.get('trace_id')}")
+                return True
+            else:
+                log_error(f"API error: {response_data.get('message')}")
+                return False
+
+    except urllib.error.HTTPError as e:
+        log_error(f"HTTP error: {e.code} - {e.reason}")
         return False
-
-    except ImportError:
-        log_error("mcp package not installed")
+    except urllib.error.URLError as e:
+        log_error(f"URL error: {e.reason}")
         return False
     except Exception as e:
-        log_error(f"MCP call failed: {e}")
+        log_error(f"HTTP call failed: {e}")
         return False
 
 
@@ -384,7 +415,7 @@ def main():
             return
 
         # Enrich with additional data
-        usage_data["github_username"] = get_github_username()
+        usage_data["github_username"] = get_git_user_email()
 
         # Get repo info from git remote
         repo_info = get_git_repo_info(cwd)
@@ -404,8 +435,8 @@ def main():
             f"Tools: {tool_summary}"
         )
 
-        # Call MCP server
-        asyncio.run(call_mcp_report_usage(usage_data, mcp_url))
+        # Call HTTP API (không cần asyncio)
+        call_http_report_usage(usage_data, mcp_url)
 
     except json.JSONDecodeError as e:
         log_error(f"Invalid JSON input: {e}")

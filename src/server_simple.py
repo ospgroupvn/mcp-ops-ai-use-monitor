@@ -2,13 +2,14 @@
 
 import os
 import warnings
-from typing import Optional
+from typing import Optional, List
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -140,12 +141,117 @@ async def health_check() -> dict:
     }
 
 
+# Pydantic models for HTTP API
+class ToolCall(BaseModel):
+    id: str = ""
+    name: str = "unknown"
+    input: dict = {}
+
+
+class UsageReportRequest(BaseModel):
+    user_prompt: str
+    assistant_response: str
+    github_username: str
+    session_id: str
+    model: str = "unknown"
+    project_name: Optional[str] = None
+    repo_full_name: Optional[str] = None
+    repo_url: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_ms: int = 0
+    message_count: int = 0
+    tool_calls: List[ToolCall] = []
+
+
+async def _report_usage_internal(data: UsageReportRequest) -> dict:
+    """Internal function to report usage to Langfuse."""
+    try:
+        print(f"[HTTP API] Reporting usage: user={data.github_username}, project={data.project_name}, model={data.model}")
+        print(f"[HTTP API] Tokens: input={data.input_tokens}, output={data.output_tokens}, duration={data.duration_ms}ms")
+        print(f"[HTTP API] Repo: {data.repo_full_name or 'N/A'}")
+        print(f"[HTTP API] User prompt: {data.user_prompt[:100]}...")
+
+        # Build metadata
+        metadata = {
+            "project_name": data.project_name or "unknown",
+            "message_count": data.message_count,
+            "source": "http-api",
+        }
+        if data.repo_url:
+            metadata["repo_url"] = data.repo_url
+        if data.repo_full_name:
+            metadata["repo_full_name"] = data.repo_full_name
+
+        # Add tool calls summary to metadata
+        if data.tool_calls:
+            tool_names = [tc.name for tc in data.tool_calls]
+            metadata["tool_count"] = len(tool_names)
+            metadata["tools_used"] = list(set(tool_names))[:20]  # Top 20 unique tools
+
+        # Create trace using start_as_current_span (Langfuse v3 API)
+        with langfuse.start_as_current_span(
+            name="claude-code-session",
+            input=data.user_prompt,
+            output=data.assistant_response,
+            metadata=metadata,
+        ):
+            trace_id = langfuse.get_current_trace_id()
+
+            # Build tags
+            tags = ["claude-code", data.model, data.project_name or "unknown"]
+            if data.repo_full_name:
+                tags.append(data.repo_full_name)
+
+            # Update trace with user and session info
+            langfuse.update_current_trace(
+                user_id=data.github_username,
+                session_id=data.session_id,
+                tags=tags,
+            )
+
+            # Create generation with token usage
+            with langfuse.start_as_current_generation(
+                name="claude-code-generation",
+                model=data.model,
+                input=data.user_prompt,
+                output=data.assistant_response,
+                metadata={
+                    "message_count": data.message_count,
+                    "duration_ms": data.duration_ms,
+                },
+            ):
+                langfuse.update_current_generation(
+                    usage_details={
+                        "input": data.input_tokens,
+                        "output": data.output_tokens,
+                        "total": data.input_tokens + data.output_tokens,
+                    }
+                )
+
+        langfuse.flush()
+
+        return {
+            "status": "success",
+            "trace_id": trace_id,
+            "message": f"Usage reported for {data.github_username}",
+            "tokens": {"input": data.input_tokens, "output": data.output_tokens},
+        }
+
+    except Exception as e:
+        print(f"[HTTP API ERROR] {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e), "trace_id": None}
+
+
 def main():
     """Run the MCP server with SSE transport"""
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse
+    from starlette.routing import Route
 
     port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "0.0.0.0")
@@ -158,11 +264,58 @@ def main():
     # Get the SSE app from FastMCP (security settings already configured at init)
     app = mcp.sse_app()
 
+    # Add HTTP API endpoint for reporting usage
+    async def http_report_usage(request: Request):
+        """HTTP POST endpoint for reporting usage - alternative to MCP tool."""
+        # Check API key
+        api_key = request.headers.get("X-MCP-API-Key")
+        if API_KEY and (not api_key or api_key != API_KEY):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Invalid or missing API key"},
+            )
+
+        try:
+            body = await request.json()
+            data = UsageReportRequest(**body)
+            result = await _report_usage_internal(data)
+            status_code = 200 if result.get("status") == "success" else 500
+            return JSONResponse(status_code=status_code, content=result)
+        except Exception as e:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "message": str(e)},
+            )
+
+    async def http_health_check(request: Request):
+        """HTTP GET endpoint for health check."""
+        return JSONResponse(content={
+            "status": "healthy",
+            "server": "OSP Usage Monitor",
+            "version": "0.1.0",
+            "langfuse_host": os.getenv("LANGFUSE_HOST", "not configured"),
+        })
+
+    # Add routes to app
+    app.routes.append(Route("/api/report-usage", http_report_usage, methods=["POST"]))
+    app.routes.append(Route("/api/health", http_health_check, methods=["GET"]))
+    app.routes.append(Route("/health", http_health_check, methods=["GET"]))
+
+    print("[HTTP API] Added endpoints: POST /api/report-usage, GET /api/health, GET /health")
+
     # Add API Key middleware if configured
     if API_KEY:
         class APIKeyMiddleware(BaseHTTPMiddleware):
             async def dispatch(self, request: Request, call_next):
-                # Check for API key in header
+                # Skip auth for health check endpoints
+                if request.url.path in ["/health", "/api/health"]:
+                    return await call_next(request)
+
+                # Skip auth for HTTP API endpoints (they handle auth internally)
+                if request.url.path == "/api/report-usage":
+                    return await call_next(request)
+
+                # Check for API key in header for MCP/SSE endpoints
                 api_key = request.headers.get("X-MCP-API-Key")
 
                 if not api_key or api_key != API_KEY:
