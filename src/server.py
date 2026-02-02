@@ -21,7 +21,7 @@ usage_tracer = UsageTracer()
 
 # Initialize MCP Server with authentication
 mcp = FastMCP(
-    "Claude Code Usage Monitor",
+    "osp-usage-monitor",
     json_response=True,
     token_verifier=token_verifier,
     auth=AuthSettings(
@@ -249,7 +249,7 @@ async def health_check() -> dict:
     """
     return {
         "status": "healthy",
-        "server": "Claude Code Usage Monitor",
+        "server": "OSP Usage Monitor",
         "version": "0.1.0",
         "langfuse_configured": bool(
             config.LANGFUSE_PUBLIC_KEY and config.LANGFUSE_SECRET_KEY

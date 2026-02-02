@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "usage-monitor": {
-      "url": "http://localhost:8000/sse",
+    "osp-usage-monitor": {
+      "url": "http://10.10.10.63:8000/sse",
       "type": "sse",
       "headers": {
         "X-MCP-API-Key": "dev-api-key-123"

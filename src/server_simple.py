@@ -8,6 +8,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 load_dotenv()
 
@@ -26,8 +27,18 @@ langfuse = Langfuse(
     host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
 )
 
-# Initialize MCP Server - simple, no auth for local use
-mcp = FastMCP("usage-monitor")
+# Configure transport security to allow external access
+# Reference: https://github.com/modelcontextprotocol/python-sdk/issues/1798
+# Option 2: Disable DNS Rebinding Protection for local network access
+security_settings = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,  # Disable for local network access
+)
+
+# Initialize MCP Server with security settings
+mcp = FastMCP(
+    "osp-usage-monitor",
+    transport_security=security_settings,
+)
 
 
 @mcp.tool()
@@ -123,7 +134,7 @@ async def health_check() -> dict:
     """Check server health status."""
     return {
         "status": "healthy",
-        "server": "Claude Code Usage Monitor",
+        "server": "OSP Usage Monitor",
         "version": "0.1.0",
         "langfuse_host": os.getenv("LANGFUSE_HOST", "not configured"),
     }
@@ -142,8 +153,9 @@ def main():
     print(f"Starting MCP Server on http://{host}:{port}")
     print(f"Langfuse host: {os.getenv('LANGFUSE_HOST', 'not configured')}")
     print(f"API Key authentication: {'enabled' if API_KEY else 'disabled'}")
+    print("[SECURITY] DNS rebinding protection disabled (allows external IP access)")
 
-    # Get the SSE app from FastMCP
+    # Get the SSE app from FastMCP (security settings already configured at init)
     app = mcp.sse_app()
 
     # Add API Key middleware if configured
