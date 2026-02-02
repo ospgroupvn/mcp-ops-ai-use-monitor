@@ -91,14 +91,27 @@ def find_session_transcript(session_id: str, cwd: str) -> Optional[str]:
     # Convert cwd to Claude projects folder name
     # /Users/namnguyenhoai/code/projects/2026/mcp-ops-ai-use-monitor
     # -> -Users-namnguyenhoai-code-projects-2026-mcp-ops-ai-use-monitor
+    # C:\Users\name\projects\app -> -C-Users-name-projects-app (Windows)
     projects_dir = Path.home() / ".claude" / "projects"
 
-    # Try to find project folder
-    cwd_folder_name = cwd.replace("/", "-")
-    if cwd_folder_name.startswith("-"):
-        pass  # Already starts with -
-    else:
-        cwd_folder_name = "-" + cwd_folder_name
+    # Use pathlib for cross-platform path handling
+    cwd_path = Path(cwd)
+
+    # Convert path parts to folder name with dashes
+    # On Windows: C:\Users\name -> ['C:', 'Users', 'name']
+    # On Unix: /Users/name -> ['/', 'Users', 'name']
+    parts = list(cwd_path.parts)
+
+    # Handle Windows drive letter (e.g., 'C:' -> 'C')
+    if parts and len(parts[0]) == 2 and parts[0][1] == ':':
+        parts[0] = parts[0][0]  # 'C:' -> 'C'
+
+    # Handle Unix root '/'
+    if parts and parts[0] == '/':
+        parts = parts[1:]  # Remove leading '/'
+
+    # Join with dashes and add leading dash
+    cwd_folder_name = "-" + "-".join(parts)
 
     project_folder = projects_dir / cwd_folder_name
 
