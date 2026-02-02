@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  mcp-usage-monitor:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_API_KEY=${MCP_API_KEY}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+    restart: unless-stopped
+    networks:
+      - mcp-network
+
+networks:
+  mcp-network:
+    driver: bridge

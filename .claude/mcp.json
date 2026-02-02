@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "usage-monitor": {
+      "url": "http://localhost:8000/sse",
+      "type": "sse",
+      "headers": {
+        "X-MCP-API-Key": "dev-api-key-123"
+      }
+    }
+  }
+}

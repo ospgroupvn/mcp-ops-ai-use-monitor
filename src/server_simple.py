@@ -1,0 +1,175 @@
+"""Simple MCP Server for Claude Code Usage Monitoring - HTTP/SSE Transport"""
+
+import os
+import warnings
+from typing import Optional
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+
+load_dotenv()
+
+# API Key for authentication
+API_KEY = os.getenv("MCP_API_KEY", "")
+
+# Initialize Langfuse - use internal import path for v3 compatibility
+try:
+    from langfuse import Langfuse
+except ImportError:
+    from langfuse._client.client import Langfuse
+
+langfuse = Langfuse(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    host=os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+)
+
+# Initialize MCP Server - simple, no auth for local use
+mcp = FastMCP("usage-monitor")
+
+
+@mcp.tool()
+async def report_usage(
+    user_prompt: str,
+    assistant_response: str,
+    github_username: str,
+    session_id: str,
+    model: str = "unknown",
+    project_name: Optional[str] = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    message_count: int = 0,
+) -> dict:
+    """
+    Report Claude Code usage data and send to Langfuse.
+
+    Args:
+        user_prompt: The user's prompt content (truncated)
+        assistant_response: Claude's response content (truncated)
+        github_username: GitHub username from git config
+        session_id: Claude Code session ID
+        model: Model identifier
+        project_name: Project name
+        input_tokens: Number of input tokens used
+        output_tokens: Number of output tokens generated
+        message_count: Number of messages in session
+
+    Returns:
+        dict: Status and trace information
+    """
+    try:
+        print(f"[MCP] Reporting usage: user={github_username}, project={project_name}, model={model}")
+        print(f"[MCP] Tokens: input={input_tokens}, output={output_tokens}")
+        print(f"[MCP] User prompt: {user_prompt[:100]}...")
+
+        # Create trace using start_as_current_span (Langfuse v3 API)
+        with langfuse.start_as_current_span(
+            name="claude-code-session",
+            input=user_prompt,
+            output=assistant_response,
+            metadata={
+                "project_name": project_name or "unknown",
+                "message_count": message_count,
+                "source": "mcp-hook",
+            },
+        ):
+            trace_id = langfuse.get_current_trace_id()
+
+            # Update trace with user and session info
+            langfuse.update_current_trace(
+                user_id=github_username,
+                session_id=session_id,
+                tags=["claude-code", model, project_name or "unknown"],
+            )
+
+            # Create generation with token usage
+            with langfuse.start_as_current_generation(
+                name="claude-code-generation",
+                model=model,
+                input=user_prompt,
+                output=assistant_response,
+                metadata={
+                    "message_count": message_count,
+                },
+            ):
+                langfuse.update_current_generation(
+                    usage_details={
+                        "input": input_tokens,
+                        "output": output_tokens,
+                        "total": input_tokens + output_tokens,
+                    }
+                )
+
+        langfuse.flush()
+
+        return {
+            "status": "success",
+            "trace_id": trace_id,
+            "message": f"Usage reported for {github_username}",
+            "tokens": {"input": input_tokens, "output": output_tokens},
+        }
+
+    except Exception as e:
+        print(f"[MCP ERROR] {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e), "trace_id": None}
+
+
+@mcp.tool()
+async def health_check() -> dict:
+    """Check server health status."""
+    return {
+        "status": "healthy",
+        "server": "Claude Code Usage Monitor",
+        "version": "0.1.0",
+        "langfuse_host": os.getenv("LANGFUSE_HOST", "not configured"),
+    }
+
+
+def main():
+    """Run the MCP server with SSE transport"""
+    import uvicorn
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
+
+    print(f"Starting MCP Server on http://{host}:{port}")
+    print(f"Langfuse host: {os.getenv('LANGFUSE_HOST', 'not configured')}")
+    print(f"API Key authentication: {'enabled' if API_KEY else 'disabled'}")
+
+    # Get the SSE app from FastMCP
+    app = mcp.sse_app()
+
+    # Add API Key middleware if configured
+    if API_KEY:
+        class APIKeyMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                # Check for API key in header
+                api_key = request.headers.get("X-MCP-API-Key")
+
+                if not api_key or api_key != API_KEY:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"error": "Invalid or missing API key"},
+                    )
+
+                # API key valid, proceed with request
+                response = await call_next(request)
+                return response
+
+        # Add middleware to the app
+        app.add_middleware(APIKeyMiddleware)
+        print(f"[AUTH] API Key middleware enabled - header: X-MCP-API-Key")
+
+    # Run with uvicorn
+    uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()
