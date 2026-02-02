@@ -13,6 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Load .env file if exists (for MCP_API_KEY)
+env_path = Path(__file__).parent.parent.parent / ".env"
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_path)
+
 
 def log_info(message: str):
     print(f"[usage-hook] {message}", file=sys.stderr)
@@ -238,25 +244,34 @@ def parse_transcript(transcript_path: str) -> dict:
             except Exception:
                 duration_ms = 0
 
-        # Estimate output tokens from assistant response length
-        # Claude Code transcript doesn't include actual output_tokens, so we estimate
+        # Estimate tokens from text length (for models that don't return usage)
+        # Claude Code transcript with ZAI models doesn't include actual token counts
         # Rough estimate: ~4 characters per token (varies by language, content type)
+        estimated_input_tokens = 0
+        if last_user_prompt:
+            text_length = len(last_user_prompt)
+            estimated_input_tokens = max(1, text_length // 4)
+
         estimated_output_tokens = 0
         if last_assistant:
-            # Count actual text content (excluding markdown artifacts)
             text_length = len(last_assistant)
-            estimated_output_tokens = max(1, text_length // 4)  # Rough estimate
+            estimated_output_tokens = max(1, text_length // 4)
+
+        # Use actual input_tokens if available (Anthropic models), otherwise use estimate
+        actual_input_tokens = last_input_tokens if last_input_tokens > 0 else estimated_input_tokens
+        # Use actual output_tokens if available, otherwise use estimate
+        actual_output_tokens = last_output_tokens if last_output_tokens > 0 else estimated_output_tokens
 
         return {
             "user_prompt": last_user_prompt[:2000] if last_user_prompt else "[No prompt]",
             "assistant_response": last_assistant[:2000] if last_assistant else "[No response]",
             "model": model,
             "session_id": session_id,
-            "input_tokens": last_input_tokens,  # Lấy từ message cuối, không cộng dồn
-            "output_tokens": estimated_output_tokens,  # Ước lượng từ độ dài response
-            "duration_ms": duration_ms,  # Thêm duration để Langfuse hiển thị tokens
+            "input_tokens": actual_input_tokens,  # Ước lượng nếu không có giá trị thực
+            "output_tokens": actual_output_tokens,  # Ước lượng nếu không có giá trị thực
+            "duration_ms": duration_ms,
             "message_count": len(user_prompts) + len(assistant_responses),
-            "tool_calls": tool_calls,  # Danh sách tool calls trong session
+            "tool_calls": tool_calls,
         }
 
     except Exception as e:
@@ -270,7 +285,13 @@ async def call_mcp_report_usage(data: dict, mcp_url: str) -> bool:
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
-        async with sse_client(mcp_url) as (read, write):
+        # Get API key from environment
+        api_key = os.environ.get("MCP_API_KEY", "")
+        headers = {}
+        if api_key:
+            headers["X-MCP-API-Key"] = api_key
+
+        async with sse_client(mcp_url, headers=headers) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 

@@ -2,7 +2,11 @@
 
 from typing import Optional
 
-from langfuse import Langfuse
+# Import from langfuse package, not local module
+try:
+    from langfuse import Langfuse
+except ImportError:
+    from langfuse._client.client import Langfuse
 
 from ..config import config
 from ..models.usage_data import UsageData
@@ -69,21 +73,23 @@ class UsageTracer:
             metadata["repo_url"] = repo_url
         if message_count > 0:
             metadata["message_count"] = message_count
+        if usage.tool_calls:
+            metadata["tool_count"] = len(usage.tool_calls)
 
-        # Create main trace span using context manager (Langfuse v3 API)
+        # Build tags
+        tags = ["claude-code", usage.context.model]
+        if repo_full_name:
+            tags.append(f"repo:{repo_full_name}")
+
+        # Create main trace span using context manager (sets up trace context)
         with self.langfuse.start_as_current_span(
             name="claude-code-usage",
-            input={"user_prompt": usage.user_prompt[:500]},  # Truncate for safety
+            input={"user_prompt": usage.user_prompt[:500]},
             output={"assistant_response": usage.assistant_response[:1000]},
             metadata=metadata,
-        ) as trace_span:
-            # Get trace ID
+        ):
+            # Get trace ID for creating sibling spans later
             trace_id = self.langfuse.get_current_trace_id()
-
-            # Build tags
-            tags = ["claude-code", usage.context.model]
-            if repo_full_name:
-                tags.append(f"repo:{repo_full_name}")
 
             # Update trace metadata
             self.langfuse.update_current_trace(
@@ -105,7 +111,7 @@ class UsageTracer:
                     "repo_url": repo_url,
                     "message_count": message_count,
                 },
-            ) as generation:
+            ):
                 # Update generation with usage details
                 self.langfuse.update_current_generation(
                     usage_details={
@@ -114,6 +120,27 @@ class UsageTracer:
                         "total": usage.context.total_tokens,
                     }
                 )
+
+        # Create tool spans as siblings (outside context manager)
+        # Import TraceContext for creating tool spans attached to the trace
+        from langfuse.types import TraceContext
+        trace_context = TraceContext(trace_id=trace_id)
+
+        for tool_call in usage.tool_calls:
+            try:
+                tool_span = self.langfuse.start_span(
+                    name=f"tool:{tool_call.name}",
+                    trace_context=trace_context,
+                    input=tool_call.input,
+                    metadata={
+                        "tool_id": tool_call.id,
+                        "tool_name": tool_call.name,
+                    },
+                )
+                tool_span.end()
+            except Exception as e:
+                # Log but don't fail the entire trace if one tool span fails
+                print(f"[langfuse] Warning: Failed to create tool span: {e}")
 
         return trace_id
 

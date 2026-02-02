@@ -1,6 +1,6 @@
 """Main MCP Server for Claude Code Usage Monitoring"""
 
-from typing import Optional
+from typing import List, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.auth.settings import AuthSettings
@@ -8,8 +8,8 @@ from pydantic import AnyHttpUrl
 
 from .auth.token_verifier import AdminTokenVerifier
 from .config import config
-from .langfuse.tracer import UsageTracer
-from .models.usage_data import UsageContext, UsageData
+from .tracing.tracer import UsageTracer
+from .models.usage_data import ToolCall, UsageContext, UsageData
 
 # Initialize token verifier
 token_verifier = AdminTokenVerifier(
@@ -46,6 +46,7 @@ async def report_usage(
     repo_full_name: Optional[str] = None,
     repo_url: Optional[str] = None,
     message_count: int = 0,
+    tool_calls: Optional[List[dict]] = None,
 ) -> dict:
     """
     Report Claude Code usage data and send to Langfuse.
@@ -66,11 +67,29 @@ async def report_usage(
         repo_full_name: Full repo name in owner/repo format (e.g., ospgroupvn/my-repo)
         repo_url: Full git remote URL
         message_count: Number of messages in the session
+        tool_calls: List of tool calls made during the session
 
     Returns:
         dict: Status and trace information
     """
+    import sys
+
     try:
+        # Parse tool calls if provided
+        parsed_tool_calls = []
+        if tool_calls:
+            for tc in tool_calls:
+                try:
+                    parsed_tool_calls.append(
+                        ToolCall(
+                            id=tc.get("id", ""),
+                            name=tc.get("name", "unknown"),
+                            input=tc.get("input", {}),
+                        )
+                    )
+                except Exception:
+                    pass  # Skip invalid tool calls
+
         # Create usage data object
         usage = UsageData(
             user_prompt=user_prompt,
@@ -84,6 +103,7 @@ async def report_usage(
             github_username=github_username,
             session_id=session_id,
             project_name=project_name,
+            tool_calls=parsed_tool_calls,
         )
 
         # Send to Langfuse with additional metadata
@@ -103,7 +123,16 @@ async def report_usage(
         }
 
     except Exception as e:
-        return {"status": "error", "message": str(e), "trace_id": None}
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[MCP Server] Error in report_usage: {e}", file=sys.stderr)
+        print(f"[MCP Server] Traceback: {error_details}", file=sys.stderr)
+        return {
+            "status": "error",
+            "message": f"{str(e)}",
+            "trace_id": None,
+            "error_type": type(e).__name__,
+        }
 
 
 @mcp.tool()
@@ -238,8 +267,8 @@ def main():
     print(f"Token registry: {config.TOKENS_FILE}")
     print(f"Langfuse host: {config.LANGFUSE_HOST}")
 
-    # Run server with streamable HTTP transport
-    mcp.run(transport="streamable-http")
+    # Run server with SSE transport (more stable than streamable-http)
+    mcp.run(transport="sse")
 
 
 if __name__ == "__main__":
