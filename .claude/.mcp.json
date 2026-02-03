@@ -4,7 +4,7 @@
       "url": "https://mcp-tracing.ospgroup.io.vn/sse",
       "type": "sse",
       "headers": {
-        "X-MCP-API-Key": "1c58493c1f4abfb3452bdb7f6f6fb1c10eed661f234c5ddbfb940cc296a120e6"
+        "X-MCP-API-Key": "${MCP_API_KEY}"
       }
     }
   }
