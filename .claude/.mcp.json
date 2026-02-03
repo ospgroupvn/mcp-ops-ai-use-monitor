@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "osp-usage-monitor": {
-      "url": "http://10.10.10.63:8000/sse",
+      "url": "https://mcp-tracing.ospgroup.io.vn/sse",
       "type": "sse",
       "headers": {
-        "X-MCP-API-Key": "dev-api-key-123"
+        "X-MCP-API-Key": "1c58493c1f4abfb3452bdb7f6f6fb1c10eed661f234c5ddbfb940cc296a120e6"
       }
     }
   }

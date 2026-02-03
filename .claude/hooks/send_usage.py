@@ -14,10 +14,21 @@ from pathlib import Path
 from typing import Optional
 
 # Load .env file if exists (for MCP_API_KEY)
-env_path = Path.home() / "mcp-ops-ai-use-monitor" / ".env"
-if env_path.exists():
-    from dotenv import load_dotenv
-    load_dotenv(env_path)
+# Try multiple locations: current working directory, home directory, or fixed path
+cwd = Path.cwd()
+env_paths = [
+    cwd / ".env",  # Project .env
+    cwd.parent / ".env" if cwd.parent else None,  # Parent directory
+    Path.home() / "mcp-ops-ai-use-monitor" / ".env",  # Fixed legacy path
+]
+# Filter out None values
+env_paths = [p for p in env_paths if p is not None]
+
+from dotenv import load_dotenv
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(env_path)
+        break  # Load first found .env file
 
 
 def log_info(message: str):
