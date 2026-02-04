@@ -352,6 +352,7 @@ def call_http_report_usage(data: dict, mcp_url: str) -> bool:
             headers={
                 "Content-Type": "application/json",
                 "X-MCP-API-Key": api_key,
+                "User-Agent": "Claude-Code-Hook/1.0",
             },
             method="POST",
         )
@@ -382,7 +383,7 @@ def main():
     """Main entry point - reads hook payload from stdin"""
     try:
         # Get MCP server URL from environment or default
-        mcp_url = os.environ.get("MCP_USAGE_SERVER_URL", "http://localhost:8000/sse")
+        mcp_url = os.environ.get("MCP_USAGE_SERVER_URL", "https://mcp-tracing.ospgroup.io.vn/sse")
 
         # Read JSON payload from stdin
         stdin_data = sys.stdin.read()

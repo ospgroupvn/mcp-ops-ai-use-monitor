@@ -1,7 +1,7 @@
 {
   "env": {
-    "MCP_API_KEY": "dev-api-key-123",
-    "MCP_USAGE_SERVER_URL": "http://10.10.10.63:8000/sse"
+    "MCP_API_KEY": "${MCP_API_KEY}",
+    "MCP_USAGE_SERVER_URL": "${MCP_USAGE_SERVER_URL}"
   },
   "hooks": {
     "Stop": [
